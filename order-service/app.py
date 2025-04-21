@@ -1,13 +1,40 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 import jwt
 from functools import wraps
 from datetime import datetime, timedelta
+import psycopg2
+import psycopg2.extras
+from flask_cors import CORS
 
 app = Flask(__name__)
-SECRET_KEY = "mi_clave_secreta"  # En producción, usa Secrets Manager
-users = [{"id": 1, "name": "Juan"}, {"id": 2, "name": "María"}]  # Simulación de BD
+CORS(app)  # Permitir solicitudes desde el frontend
+app.config['SECRET_KEY'] = "mi_clave_secreta"
+app.config['DATABASE_URL'] = "postgresql://user:password@db:5432/mydb"
 
-# Decorador para verificar el token JWT
+# Conexión a la base de datos
+def get_db_connection():
+    conn = psycopg2.connect(app.config['DATABASE_URL'])
+    return conn
+
+# Crear tabla orders si no existe
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            id SERIAL PRIMARY KEY,
+            user_name VARCHAR(100) NOT NULL,
+            item VARCHAR(100) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    cur.close()
+    conn.close()
+
+init_db()
+
+# Decorador JWT
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -15,71 +42,67 @@ def token_required(f):
         if not token:
             return jsonify({"message": "Token requerido"}), 403
         try:
-            token = token.split(" ")[1]  # Formato "Bearer <token>"
-            jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            token = token.split(" ")[1]
+            jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
         except Exception:
             return jsonify({"message": "Token inválido"}), 403
         return f(*args, **kwargs)
     return decorated
 
-# Login para obtener token
-@app.route('/api/v1/login', methods=['POST'])
-def login():
+# API Endpoints
+@app.route('/api/v1/orders', methods=['GET'])
+@token_required
+def get_orders():
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute('SELECT * FROM orders ORDER BY created_at DESC')
+    orders = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify([dict(order) for order in orders])
+
+@app.route('/api/v1/orders/<int:order_id>', methods=['GET'])
+@token_required
+def get_order(order_id):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute('SELECT * FROM orders WHERE id = %s', (order_id,))
+    order = cur.fetchone()
+    cur.close()
+    conn.close()
+    if order:
+        return jsonify(dict(order))
+    return jsonify({"message": "Orden no encontrada"}), 404
+
+@app.route('/api/v1/orders', methods=['POST'])
+@token_required
+def create_order():
     data = request.get_json()
-    if data.get('username') == 'admin' and data.get('password') == '12345':
-        token = jwt.encode({
-            'user': 'admin',
-            'exp': datetime.utcnow() + timedelta(minutes=30)
-        }, SECRET_KEY, algorithm="HS256")
-        return jsonify({"token": token})
-    return jsonify({"message": "Credenciales inválidas"}), 401
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        'INSERT INTO orders (user_name, item) VALUES (%s, %s) RETURNING id',
+        (data['user'], data['item'])
+    )
+    order_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"message": "Orden creada", "id": order_id}), 201
 
-# GET: Obtener todos los usuarios
-@app.route('/api/v1/users', methods=['GET'])
-@token_required
-def get_users():
-    return jsonify(users)
-
-# GET: Obtener un usuario por ID
-@app.route('/api/v1/users/<int:user_id>', methods=['GET'])
-@token_required
-def get_user(user_id):
-    user = next((u for u in users if u["id"] == user_id), None)
-    if user:
-        return jsonify(user)
-    return jsonify({"message": "Usuario no encontrado"}), 404
-
-# POST: Crear un nuevo usuario
-@app.route('/api/v1/users', methods=['POST'])
-@token_required
-def create_user():
-    data = request.get_json()
-    new_id = max(u["id"] for u in users) + 1 if users else 1
-    new_user = {"id": new_id, "name": data["name"]}
-    users.append(new_user)
-    return jsonify({"message": "Usuario creado", "user": new_user}), 201
-
-# PUT: Actualizar un usuario existente
-@app.route('/api/v1/users/<int:user_id>', methods=['PUT'])
-@token_required
-def update_user(user_id):
-    data = request.get_json()
-    user = next((u for u in users if u["id"] == user_id), None)
-    if user:
-        user["name"] = data["name"]
-        return jsonify({"message": "Usuario actualizado", "user": user})
-    return jsonify({"message": "Usuario no encontrado"}), 404
-
-# DELETE: Eliminar un usuario
-@app.route('/api/v1/users/<int:user_id>', methods=['DELETE'])
-@token_required
-def delete_user(user_id):
-    global users
-    user = next((u for u in users if u["id"] == user_id), None)
-    if user:
-        users = [u for u in users if u["id"] != user_id]
-        return jsonify({"message": "Usuario eliminado"})
-    return jsonify({"message": "Usuario no encontrado"}), 404
-
+# Interfaz Web
+@app.route('/orders')
+def orders_view():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cur.execute('SELECT * FROM orders ORDER BY created_at DESC')
+        orders = cur.fetchall()
+        cur.close()
+        conn.close()
+        return render_template('orders/index.html', orders=orders)
+    except Exception as e:
+        app.logger.error(f"Error: {str(e)}")
+        return "Error cargando las órdenes", 500
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5001)
