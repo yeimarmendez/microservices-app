@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nuevo Usuario</title>
+</head>
+<body>
+    <h1>Crear Usuario</h1>
+    <form action="{{ url_for('new_user') }}" method="POST">
+        <label for="name">Nombre:</label>
+        <input type="text" id="name" name="name" required>
+        <button type="submit">Guardar</button>
+    </form>
+    <a href="{{ url_for('index') }}"><button>Cancelar</button></a>
+</body>
+</html>

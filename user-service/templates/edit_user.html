@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Editar Usuario</title>
+</head>
+<body>
+    <h1>Editar Usuario</h1>
+    <form action="{{ url_for('update_user_ui', user_id=user.id) }}" method="POST">
+        <label for="name">Nombre:</label>
+        <input type="text" id="name" name="name" value="{{ user.name }}" required>
+        <button type="submit">Actualizar</button>
+    </form>
+    <a href="{{ url_for('index') }}"><button>Cancelar</button></a>
+</body>
+</html>
